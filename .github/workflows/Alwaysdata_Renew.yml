@@ -1,11 +1,14 @@
 name: Alwaysdata 每月随机自动续期
 on:
-  workflow_dispatch: # 支持手动触发
+  workflow_dispatch: # 支持手动触发（强制执行，不受跳过限制）
   schedule:
-    - cron: '33 17 20 11 *'   # 👈 这个时间每次运行成功后会被脚本自动改写
+    - cron: '33 17 20 11 *'   # [DYNAMIC_CRON] LAST_RUN: 2026-10
+    - cron: '0 23 28 * *'     # [FALLBACK_CRON] 每月28日 23:00 UTC 固定兜底
+
 permissions:
   contents: write
   actions: write
+
 jobs:
   alwaysdata_renew:
     runs-on: ubuntu-latest
@@ -14,19 +17,47 @@ jobs:
       - name: 拉取仓库代码
         uses: actions/checkout@v4
         with:
-          # 关键：用自己的 PAT 替换默认的 GITHUB_TOKEN
-          # 这样后续 git push 会自动继承此 token 的权限
           token: ${{ secrets.REPO_TOKEN }}
 
+      - name: 🔍 检查是否跳过本次运行（防重复执行）
+        id: check_skip
+        run: |
+          # 1. 手动触发时强制执行
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "::notice::👉 检测到手动触发，强制执行续期！"
+            echo "skip=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          WORKFLOW_FILE="${GITHUB_WORKSPACE}/.github/workflows/Alwaysdata_Renew.yml"
+          CURRENT_YEAR_MONTH=$(date +%Y-%m)
+
+          # 2. 提取上次成功执行的年月记录
+          LAST_RUN=$(grep '\[DYNAMIC_CRON\]' "$WORKFLOW_FILE" | grep -oE 'LAST_RUN: [0-9]{4}-[0-9]{2}' | cut -d' ' -f2 || true)
+
+          echo "当前年月: $CURRENT_YEAR_MONTH, 上次成功执行年月: $LAST_RUN"
+
+          # 3. 比对执行状态
+          if [ "$LAST_RUN" = "$CURRENT_YEAR_MONTH" ]; then
+            echo "::notice::⏭️ 本月 ($CURRENT_YEAR_MONTH) 已经成功完成过续期，本次触发跳过！"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "::notice::⚠️ 本月 ($CURRENT_YEAR_MONTH) 尚未成功续期，开始执行续期操作！"
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: 设置 Python 环境
+        if: steps.check_skip.outputs.skip != 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: 安装基础依赖
+        if: steps.check_skip.outputs.skip != 'true'
         run: pip install --quiet requests beautifulsoup4
 
       - name: 执行 Alwaysdata 续期脚本
+        if: steps.check_skip.outputs.skip != 'true'
         env:
           ALWAYSDATA_USER: ${{ secrets.ALWAYSDATA_USER }}
           ALWAYSDATA_PASS: ${{ secrets.ALWAYSDATA_PASS }}
@@ -35,7 +66,7 @@ jobs:
         run: python alwaysdata_renew.py
 
       - name: 🎲 智能计算下个月的随机 Cron 时间
-        if: success()
+        if: steps.check_skip.outputs.skip != 'true' && success()
         id: generate_cron
         run: |
           CURRENT_MONTH=$(date +%-m)
@@ -51,46 +82,40 @@ jobs:
 
           RANDOM_MIN=$((RANDOM % 60))
           RANDOM_HOUR=$((RANDOM % 24))
-          RANDOM_DAY=$((RANDOM % 28 + 1))
+          # 随机生成在 1~27 日，避开 28 日的兜底时间，且完全兼容 2 月份
+          RANDOM_DAY=$((RANDOM % 27 + 1))
           NEW_CRON="$RANDOM_MIN $RANDOM_HOUR $RANDOM_DAY $NEXT_MONTH *"
 
           echo "NEW_CRON=$NEW_CRON" >> $GITHUB_OUTPUT
           echo "::notice::🎲 成功为下个月生成随机 Cron: $NEW_CRON (预计在 ${NEXT_YEAR}年${NEXT_MONTH}月${RANDOM_DAY}日 ${RANDOM_HOUR}:${RANDOM_MIN} UTC 运行)"
 
       - name: 🔄 自动改写工作流文件并推送到仓库
-        if: success()
+        if: steps.check_skip.outputs.skip != 'true' && success()
         run: |
           set -e
           NEW_CRON="${{ steps.generate_cron.outputs.NEW_CRON }}"
+          CURRENT_YEAR_MONTH=$(date +%Y-%m)
           WORKFLOW_FILE="${GITHUB_WORKSPACE}/.github/workflows/Alwaysdata_Renew.yml"
 
-          # 确认文件存在
           if [ ! -f "$WORKFLOW_FILE" ]; then
             echo "::error::找不到工作流文件: $WORKFLOW_FILE"
-            ls -la "${GITHUB_WORKSPACE}/.github/workflows/" || true
             exit 1
           fi
 
-          # 定位 cron 行号并精准替换
-          LINE_NUM=$(grep -n "cron: '" "$WORKFLOW_FILE" | head -n1 | cut -d: -f1)
-          if [ -z "$LINE_NUM" ]; then
-            echo "::error::未在 yml 文件中找到 cron 定义行"
-            exit 1
-          fi
+          # 精准替换动态 Cron 这一行，并同步盖上当月的运行戳
+          NEW_LINE="    - cron: '$NEW_CRON'   # [DYNAMIC_CRON] LAST_RUN: $CURRENT_YEAR_MONTH"
+          sed -i "s|.*\[DYNAMIC_CRON\].*|$NEW_LINE|" "$WORKFLOW_FILE"
 
-          sed -i "${LINE_NUM}c\\    - cron: '$NEW_CRON'   # 👈 这个时间每次运行成功后会被脚本自动改写" "$WORKFLOW_FILE"
-
-          # 检查是否有物理变动
+          # 检查是否有文件改动
           if git diff --quiet "$WORKFLOW_FILE"; then
-            echo "::notice::Cron 时间无物理变化，无需提交"
+            echo "::notice::文件无物理变化，无需提交"
             exit 0
           fi
 
-          # checkout 时已用 PAT，此处直接 push 即可，无需再改 remote URL
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add "$WORKFLOW_FILE"
           git commit -m "🔄 自动打乱排期：更新下月 Alwaysdata 随机 Cron" \
-                   -m "新排期表达式: $NEW_CRON"
+                   -m "新排期表达式: $NEW_CRON (已记录续期年月: $CURRENT_YEAR_MONTH)"
           git push
-          echo "::notice::✅ 下个月的随机定时任务已成功推送到仓库中！"
+          echo "::notice::✅ 下个月的随机排期与运行状态已成功推送到仓库！"
