@@ -2,7 +2,7 @@ name: Alwaysdata 每月随机自动续期
 on:
   workflow_dispatch: # 支持手动触发（强制执行，不受跳过限制）
   schedule:
-    - cron: '33 17 20 11 *'   # [DYNAMIC_CRON] LAST_RUN: 2026-10
+    - cron: '4 9 14 12 *'   # [DYNAMIC_CRON] LAST_RUN: 2026-11
     - cron: '0 23 28 * *'     # [FALLBACK_CRON] 每月28日 23:00 UTC 固定兜底
 
 permissions:
@@ -103,7 +103,7 @@ jobs:
           fi
 
           # 精准替换动态 Cron 这一行，并同步盖上当月的运行戳
-          NEW_LINE="    - cron: '$NEW_CRON'   # [DYNAMIC_CRON] LAST_RUN: $CURRENT_YEAR_MONTH"
+    - cron: '4 9 14 12 *'   # [DYNAMIC_CRON] LAST_RUN: 2026-11
           sed -i "s|.*\[DYNAMIC_CRON\].*|$NEW_LINE|" "$WORKFLOW_FILE"
 
           # 检查是否有文件改动
