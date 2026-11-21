@@ -32,8 +32,8 @@ jobs:
           WORKFLOW_FILE="${GITHUB_WORKSPACE}/.github/workflows/Alwaysdata_Renew.yml"
           CURRENT_YEAR_MONTH=$(date +%Y-%m)
 
-          # 2. 提取上次成功执行的年月记录
-          LAST_RUN=$(grep '\[DYNAMIC_CRON\]' "$WORKFLOW_FILE" | grep -oE 'LAST_RUN: [0-9]{4}-[0-9]{2}' | cut -d' ' -f2 || true)
+          # 2. 仅从文件前 15 行提取记录，避免与下方脚本本身产生串扰
+          LAST_RUN=$(head -n 15 "$WORKFLOW_FILE" | grep '\[DYNAMIC_CRON\]' | grep -oE 'LAST_RUN: [0-9]{4}-[0-9]{2}' | cut -d' ' -f2 || true)
 
           echo "当前年月: $CURRENT_YEAR_MONTH, 上次成功执行年月: $LAST_RUN"
 
@@ -102,9 +102,14 @@ jobs:
             exit 1
           fi
 
-          # 精准替换动态 Cron 这一行，并同步盖上当月的运行戳
-    - cron: '4 9 14 12 *'   # [DYNAMIC_CRON] LAST_RUN: 2026-11
-          sed -i "s|.*\[DYNAMIC_CRON\].*|$NEW_LINE|" "$WORKFLOW_FILE"
+          # 定位顶部首个 cron 行号，按精准行号替换，绝对不会误伤脚本其他部分
+          LINE_NUM=$(grep -n "cron: '" "$WORKFLOW_FILE" | head -n1 | cut -d: -f1)
+          if [ -z "$LINE_NUM" ]; then
+            echo "::error::未在 yml 文件中找到 cron 定义行"
+            exit 1
+          fi
+
+          sed -i "${LINE_NUM}s|.*|    - cron: '${NEW_CRON}'   # [DYNAMIC_CRON] LAST_RUN: ${CURRENT_YEAR_MONTH}|" "$WORKFLOW_FILE"
 
           # 检查是否有文件改动
           if git diff --quiet "$WORKFLOW_FILE"; then
