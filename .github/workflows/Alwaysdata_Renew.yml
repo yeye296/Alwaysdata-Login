@@ -2,7 +2,7 @@ name: Alwaysdata 每月随机自动续期
 on:
   workflow_dispatch: # 支持手动触发（强制执行，不受跳过限制）
   schedule:
-    - cron: '4 9 14 12 *'   # [DYNAMIC_CRON] LAST_RUN: 2026-11
+    - cron: '14 17 6 12 *'   # [DYNAMIC_CRON] LAST_RUN: 2026-11
     - cron: '0 23 28 * *'     # [FALLBACK_CRON] 每月28日 23:00 UTC 固定兜底
 
 permissions:
